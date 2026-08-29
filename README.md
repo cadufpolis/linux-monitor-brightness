@@ -21,6 +21,8 @@ This is a **v1 skeleton**, built dial-only on purpose — see [Status & next ste
   ```
   then `sudo groupadd -f i2c && sudo usermod -aG i2c $USER` and re-login. (Same setup [`ddcutil`](https://www.ddcutil.com/) documents — installing it is a good way to sanity-check DDC/CI works on your monitor(s) before trying the plugin.)
 
+Heads up: the very first brightness read/write for a given monitor after the plugin starts (or after **Rescan monitors**) can take a few seconds — `ddc-hi`'s `Display::enumerate()` scans *every* `/dev/i2c-*` bus on the system probing for a readable EDID, not just the ones with a monitor on them, and a desktop motherboard can easily expose a couple dozen unrelated ones (SMBus, RAM SPD, sensors, ...). The plugin only pays that cost once and keeps the handle open after — see `DISPLAY_REGISTRY` in `src/monitors.rs` — so every read/write after the first is fast regardless of the rotate delay setting below.
+
 ## Usage
 
 ### Dial (Stream Deck+)
