@@ -10,8 +10,9 @@ use crate::{gfx, monitors};
 /// Brightness adjustment applied per dial tick, in percentage points.
 const BRIGHTNESS_STEP_PERCENT: i32 = 5;
 
-/// Brightness the dial drops to when "dimmed" (press / short touch toggle).
-const DIM_TARGET_PERCENT: u16 = 5;
+/// Default for [`DialSettings::dim_target_percent`] when not set from the
+/// property inspector.
+const DEFAULT_DIM_TARGET_PERCENT: u16 = 5;
 
 /// Default for [`DialSettings::debounce_ms`] when not set from the property
 /// inspector. Each rotate tick used to trigger its own blocking I2C
@@ -36,6 +37,9 @@ pub struct DialSettings {
     /// rotate tick before the brightness change is actually sent over
     /// DDC/CI. See [`DEFAULT_DEBOUNCE_MS`].
     pub debounce_ms: u32,
+    /// Brightness (0-100) the dial drops to when "dimmed" (press / short
+    /// touch toggle). See [`DEFAULT_DIM_TARGET_PERCENT`].
+    pub dim_target_percent: u16,
 }
 
 impl Default for DialSettings {
@@ -44,6 +48,7 @@ impl Default for DialSettings {
             selected_monitor_keys: Vec::new(),
             custom_name: String::new(),
             debounce_ms: DEFAULT_DEBOUNCE_MS,
+            dim_target_percent: DEFAULT_DIM_TARGET_PERCENT,
         }
     }
 }
@@ -183,8 +188,8 @@ impl Action for MonitorBrightnessAction {
     }
 }
 
-/// Toggle between the current brightness and [`DIM_TARGET_PERCENT`] for
-/// every monitor this dial controls, mirroring the mute gesture on the
+/// Toggle between the current brightness and `settings.dim_target_percent`
+/// for every monitor this dial controls, mirroring the mute gesture on the
 /// sibling volume-controller plugin's dial. Unlike rotation this applies
 /// immediately (no debounce) — it's a single, deliberate press.
 async fn toggle_dim(instance: &Instance, settings: &DialSettings) {
@@ -192,6 +197,8 @@ async fn toggle_dim(instance: &Instance, settings: &DialSettings) {
     if keys.is_empty() {
         return;
     }
+
+    let dim_target = settings.dim_target_percent.min(100);
 
     let currently_dimmed = DIM_STATE
         .lock()
@@ -216,13 +223,13 @@ async fn toggle_dim(instance: &Instance, settings: &DialSettings) {
     } else {
         let avg = cached_avg_brightness(&keys).await.unwrap_or(100);
         // Never "restore" back into the dim range if it was already low.
-        let restore_percent = avg.max(DIM_TARGET_PERCENT + 5);
+        let restore_percent = avg.max(dim_target + 5).min(100);
 
         DIM_STATE.lock().await.insert(
             instance.instance_id.clone(),
             DimState { dimmed: true, restore_percent },
         );
-        set_selected_brightness(keys, DIM_TARGET_PERCENT).await;
+        set_selected_brightness(keys, dim_target).await;
     }
 
     push_feedback(instance, settings).await;

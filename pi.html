@@ -25,6 +25,10 @@
                 debounceInput.value =
                     inActionInfo.payload.settings.debounce_ms ?? 1000;
 
+                const dimTargetInput = document.getElementById("dim_target_percent");
+                dimTargetInput.value =
+                    inActionInfo.payload.settings.dim_target_percent ?? 5;
+
                 websocket.onopen = () => {
                     websocket.send(
                         JSON.stringify({
@@ -97,6 +101,10 @@
                         if (document.activeElement !== debounceInput) {
                             debounceInput.value = data.payload.settings.debounce_ms ?? 1000;
                         }
+                        if (document.activeElement !== dimTargetInput) {
+                            dimTargetInput.value =
+                                data.payload.settings.dim_target_percent ?? 5;
+                        }
                         renderMonitors();
                     } else if (
                         data.event == "sendToPropertyInspector" &&
@@ -130,8 +138,10 @@
 
                 customNameInput.addEventListener("input", scheduleSave);
                 debounceInput.addEventListener("input", scheduleSave);
+                dimTargetInput.addEventListener("input", scheduleSave);
                 customNameInput.addEventListener("change", saveNow);
                 debounceInput.addEventListener("change", saveNow);
+                dimTargetInput.addEventListener("change", saveNow);
                 window.addEventListener("pagehide", saveNow);
                 document.addEventListener("visibilitychange", () => {
                     if (document.visibilityState === "hidden") saveNow();
@@ -142,6 +152,7 @@
                 // actually changed.
                 update = () => {
                     const debounceMs = parseInt(debounceInput.value, 10);
+                    const dimTarget = parseInt(dimTargetInput.value, 10);
                     websocket.send(
                         JSON.stringify({
                             event: "setSettings",
@@ -152,6 +163,9 @@
                                 debounce_ms: Number.isFinite(debounceMs)
                                     ? Math.max(0, debounceMs)
                                     : 1000,
+                                dim_target_percent: Number.isFinite(dimTarget)
+                                    ? Math.min(100, Math.max(0, dimTarget))
+                                    : 5,
                             },
                         }),
                     );
@@ -272,10 +286,20 @@
             <div class="hint">
                 How long to wait, after you stop turning the dial, before the
                 brightness change is actually sent to the monitor (ms).
-                Higher is gentler on slower monitors. Saves when you click
-                away or press Enter.
+                Higher is gentler on slower monitors. Saves automatically
+                shortly after you stop typing.
             </div>
             <input id="debounce_ms" type="number" min="0" max="5000" step="100" />
+        </div>
+
+        <div class="section">
+            <div class="section-title">Quick dim level</div>
+            <div class="hint">
+                Brightness (%) the dial drops to when you press it or tap the
+                touchscreen. Pressing again restores what it was before.
+                Saves automatically shortly after you stop typing.
+            </div>
+            <input id="dim_target_percent" type="number" min="0" max="100" step="1" />
         </div>
     </body>
 </html>

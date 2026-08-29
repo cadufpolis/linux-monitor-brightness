@@ -30,7 +30,7 @@ Heads up: the very first brightness read/write for a given monitor after the plu
 Drag the `Monitor Brightness Dial` action onto a dial. Open its settings panel (property inspector) and check the monitor(s) it should control — the list is populated live from a DDC/CI scan; use **Rescan monitors** if you plug one in after opening the panel.
 
 - **Rotate** the dial to adjust brightness (all selected monitors move together, each from its own current value). The bar/percentage on screen updates on every tick, but the actual DDC/CI write is debounced — see **Rotate delay** below — since most monitors' DDC firmware is slow and can lock up if commands are fired faster than that (one write per tick was the cause of early lockups during testing).
-- **Press** the dial, or **tap** the touchscreen segment, to toggle a quick dim (drops to ~5%, remembers where to restore to). This one applies immediately, no debounce.
+- **Press** the dial, or **tap** the touchscreen segment, to toggle a quick dim (drops to **Quick dim level** below, default `5%`, remembers where to restore to). This one applies immediately, no debounce.
 - **Press-and-hold** the touchscreen (long touch) to rescan monitors and refresh the display.
 
 Settings panel fields:
@@ -38,6 +38,7 @@ Settings panel fields:
 - **Dial name** — overrides the title shown on screen. Left blank, it defaults to the selected monitor's own name (single selection) or "N displays" (more than one).
 - **Monitors controlled by this dial** — the checkbox list.
 - **Rotate delay** — how long, in ms, the dial has to sit still after the last tick before the brightness change is actually sent (default `1000`). Raise it if a monitor still struggles to keep up; lower it for snappier response on a monitor that handles DDC/CI fine.
+- **Quick dim level** — brightness (%) the press/tap toggle drops to (default `5`).
 
 ## Project layout
 
