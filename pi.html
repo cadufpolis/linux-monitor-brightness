@@ -85,8 +85,18 @@
                     console.log("PI received event:", data.event, data);
                     if (data.event == "didReceiveSettings") {
                         selectedKeys = data.payload.settings.selected_monitor_keys ?? [];
-                        customNameInput.value = data.payload.settings.custom_name ?? "";
-                        debounceInput.value = data.payload.settings.debounce_ms ?? 1000;
+                        // setSettings echoes back as didReceiveSettings, and
+                        // OpenDeck can also broadcast it unprompted (e.g. a
+                        // second property inspector window open on the same
+                        // dial). Don't stomp on a field the user is actively
+                        // typing into, or every keystroke's round trip would
+                        // race with the next one and drop characters.
+                        if (document.activeElement !== customNameInput) {
+                            customNameInput.value = data.payload.settings.custom_name ?? "";
+                        }
+                        if (document.activeElement !== debounceInput) {
+                            debounceInput.value = data.payload.settings.debounce_ms ?? 1000;
+                        }
                         renderMonitors();
                     } else if (
                         data.event == "sendToPropertyInspector" &&
@@ -101,8 +111,12 @@
                     .getElementById("rescan_btn")
                     .addEventListener("click", requestMonitors);
 
-                customNameInput.addEventListener("input", update);
-                debounceInput.addEventListener("input", update);
+                // "change" (fires on blur / Enter), not "input" (fires per
+                // keystroke) — sending setSettings on every keystroke made
+                // the didReceiveSettings-clobbers-a-focused-field race above
+                // far more likely to actually hit while typing.
+                customNameInput.addEventListener("change", update);
+                debounceInput.addEventListener("change", update);
 
                 // setSettings replaces the whole settings object, so every
                 // field has to be sent together regardless of which one
@@ -218,7 +232,7 @@
             <div class="hint">
                 Shown on the dial's screen. Leave blank to use the selected
                 monitor's name (or "N displays" when more than one is
-                picked).
+                picked). Saves when you click away or press Enter.
             </div>
             <input id="custom_name" type="text" placeholder="Auto" />
         </div>
@@ -239,7 +253,8 @@
             <div class="hint">
                 How long to wait, after you stop turning the dial, before the
                 brightness change is actually sent to the monitor (ms).
-                Higher is gentler on slower monitors.
+                Higher is gentler on slower monitors. Saves when you click
+                away or press Enter.
             </div>
             <input id="debounce_ms" type="number" min="0" max="5000" step="100" />
         </div>

@@ -10,26 +10,32 @@ use std::sync::LazyLock;
 
 const ICON_SIZE: u32 = 144;
 
+/// The brightness color used everywhere this glyph appears: the dial's icon
+/// (via [`BRIGHTNESS_ICON`]) and, at a larger size, the plugin's own list
+/// icon and action-grid icon (`img/icon.png`, `img/grid-slider.png` — see
+/// `examples/render_icons.rs`), so the same shape represents the plugin
+/// everywhere it shows up instead of just on the dial.
+pub const BRIGHTNESS_COLOR: Rgba<u8> = Rgba([245, 197, 66, 255]);
+
 /// Bright sun-with-rays icon (the conventional "brightness" glyph), shown
 /// while a dial's monitor(s) are at their normal (non-dimmed) brightness.
-/// Swap this for a real asset whenever.
 pub static BRIGHTNESS_ICON: LazyLock<String> =
-    LazyLock::new(|| encode_icon(sun_icon(Rgba([245, 197, 66, 255]))));
+    LazyLock::new(|| encode_icon(sun_icon(ICON_SIZE, BRIGHTNESS_COLOR)));
 
 /// Same icon, faded, shown while the dial is in the "dimmed" toggle state.
 pub static BRIGHTNESS_ICON_DIMMED: LazyLock<String> =
-    LazyLock::new(|| encode_icon(sun_icon(Rgba([245, 197, 66, 90]))));
+    LazyLock::new(|| encode_icon(sun_icon(ICON_SIZE, Rgba([245, 197, 66, 90]))));
 
 /// Faint gray placeholder shown on a dial with no monitor selected yet
 /// (nothing configured in the property inspector).
 pub static IDLE_ICON: LazyLock<String> =
-    LazyLock::new(|| encode_icon(sun_icon(Rgba([160, 160, 160, 90]))));
+    LazyLock::new(|| encode_icon(sun_icon(ICON_SIZE, Rgba([160, 160, 160, 90]))));
 
 /// Draws the classic "brightness" glyph: a filled circle (the sun) with 8
-/// short rays radiating out from it.
-fn sun_icon(color: Rgba<u8>) -> RgbaImage {
-    let mut img = RgbaImage::from_pixel(ICON_SIZE, ICON_SIZE, Rgba([0, 0, 0, 0]));
-    let center = ICON_SIZE as f32 / 2.0;
+/// short rays radiating out from it, on a transparent `size`x`size` canvas.
+pub fn sun_icon(size: u32, color: Rgba<u8>) -> RgbaImage {
+    let mut img = RgbaImage::from_pixel(size, size, Rgba([0, 0, 0, 0]));
+    let center = size as f32 / 2.0;
 
     let sun_radius = center * 0.42;
     let ray_inner = center * 0.6;
