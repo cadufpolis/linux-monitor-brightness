@@ -2,7 +2,7 @@ use openaction::*;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{collections::HashMap, sync::LazyLock};
+use std::{collections::HashMap, sync::LazyLock, time::Duration};
 use tokio::sync::Mutex;
 
 use crate::{gfx, monitors};
@@ -13,8 +13,16 @@ const BRIGHTNESS_STEP_PERCENT: i32 = 5;
 /// Brightness the dial drops to when "dimmed" (press / short touch toggle).
 const DIM_TARGET_PERCENT: u16 = 5;
 
+/// How long the dial has to sit still before a rotation is actually sent to
+/// the monitor over DDC/CI. Each tick used to trigger its own blocking I2C
+/// read+write; spinning the dial fired those faster than a monitor's DDC
+/// firmware could keep up, which is what was causing the lockups — so ticks
+/// now only update an in-memory value + the on-screen bar, and the real
+/// hardware write is debounced to once per "the user stopped turning it".
+const ROTATE_DEBOUNCE: Duration = Duration::from_millis(1000);
+
 /// Per-instance settings, configured from the property inspector: which
-/// monitor(s) (by [`monitors::monitor_key`]-style stable id) this dial
+/// monitor(s) (by [`monitors::MonitorInfo::key`]-style stable id) this dial
 /// controls. A dial can drive more than one monitor at once — rotating
 /// nudges every selected monitor by the same delta.
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -34,6 +42,20 @@ struct DimState {
 static DIM_STATE: LazyLock<Mutex<HashMap<String, DimState>>> =
     LazyLock::new(|| Mutex::const_new(HashMap::new()));
 
+/// Last known (or optimistically assumed, while a rotation is still
+/// debouncing) brightness per monitor key. Shared across every dial, since
+/// brightness is a property of the monitor, not of any one dial instance.
+/// This is what lets rotation update the bar on every tick without hitting
+/// the hardware on every tick.
+static BRIGHTNESS_CACHE: LazyLock<Mutex<HashMap<String, u16>>> =
+    LazyLock::new(|| Mutex::const_new(HashMap::new()));
+
+/// Bumped on every rotation of a given dial; a debounce task only commits
+/// its write if the generation it captured is still current when it wakes
+/// up, i.e. nobody rotated again in the meantime.
+static ROTATE_GENERATION: LazyLock<Mutex<HashMap<String, u64>>> =
+    LazyLock::new(|| Mutex::const_new(HashMap::new()));
+
 pub struct MonitorBrightnessAction;
 
 #[async_trait]
@@ -48,6 +70,7 @@ impl Action for MonitorBrightnessAction {
 
     async fn will_disappear(&self, instance: &Instance, _settings: &Self::Settings) -> OpenActionResult<()> {
         DIM_STATE.lock().await.remove(&instance.instance_id);
+        ROTATE_GENERATION.lock().await.remove(&instance.instance_id);
         Ok(())
     }
 
@@ -87,9 +110,18 @@ impl Action for MonitorBrightnessAction {
             return Ok(());
         }
 
+        // A manual nudge overrides any pending "dimmed" bookkeeping — the
+        // next press should dim from here, not restore to a stale value.
+        DIM_STATE.lock().await.remove(&instance.instance_id);
+
         let delta = BRIGHTNESS_STEP_PERCENT * ticks as i32;
-        adjust_selected_brightness(settings.selected_monitor_keys.clone(), delta).await;
+        bump_cached_brightness(settings.selected_monitor_keys.clone(), delta).await;
+
+        // Reflect the change immediately — this is all in-memory, no hardware I/O.
         push_feedback(instance, settings).await;
+
+        // Actually writing to the monitor(s) is debounced; see ROTATE_DEBOUNCE.
+        schedule_brightness_commit(instance.instance_id.clone(), settings.selected_monitor_keys.clone()).await;
 
         Ok(())
     }
@@ -120,7 +152,8 @@ impl Action for MonitorBrightnessAction {
 
 /// Toggle between the current brightness and [`DIM_TARGET_PERCENT`] for
 /// every monitor this dial controls, mirroring the mute gesture on the
-/// sibling volume-controller plugin's dial.
+/// sibling volume-controller plugin's dial. Unlike rotation this applies
+/// immediately (no debounce) — it's a single, deliberate press.
 async fn toggle_dim(instance: &Instance, settings: &DialSettings) {
     let keys = settings.selected_monitor_keys.clone();
     if keys.is_empty() {
@@ -148,9 +181,7 @@ async fn toggle_dim(instance: &Instance, settings: &DialSettings) {
         );
         set_selected_brightness(keys, restore).await;
     } else {
-        let avg = selected_monitors_avg_brightness(keys.clone())
-            .await
-            .unwrap_or(100);
+        let avg = cached_avg_brightness(&keys).await.unwrap_or(100);
         // Never "restore" back into the dim range if it was already low.
         let restore_percent = avg.max(DIM_TARGET_PERCENT + 5);
 
@@ -164,7 +195,9 @@ async fn toggle_dim(instance: &Instance, settings: &DialSettings) {
     push_feedback(instance, settings).await;
 }
 
-/// Push the dial's icon/title/value/bar to its touchscreen segment.
+/// Push the dial's icon/title/value/bar to its touchscreen segment, from
+/// whatever [`BRIGHTNESS_CACHE`] currently believes (reading hardware only
+/// for monitors it hasn't seen yet).
 async fn push_feedback(instance: &Instance, settings: &DialSettings) {
     if settings.selected_monitor_keys.is_empty() {
         let feedback = json!({
@@ -180,7 +213,7 @@ async fn push_feedback(instance: &Instance, settings: &DialSettings) {
         return;
     }
 
-    let avg = selected_monitors_avg_brightness(settings.selected_monitor_keys.clone())
+    let avg = cached_avg_brightness(&settings.selected_monitor_keys)
         .await
         .unwrap_or(0);
 
@@ -213,21 +246,45 @@ fn monitor_count_label(count: usize) -> String {
     }
 }
 
-/// Average current brightness across the given monitors (missing/unreachable
-/// ones are skipped). `ddc-hi` calls are blocking I2C I/O, so they're run on
-/// a blocking-friendly thread rather than the async runtime.
-async fn selected_monitors_avg_brightness(keys: Vec<String>) -> Option<u16> {
-    if keys.is_empty() {
-        return None;
+/// Make sure every given monitor has an entry in [`BRIGHTNESS_CACHE`],
+/// reading hardware (once per monitor, ever, until the plugin restarts) for
+/// whichever ones don't yet.
+async fn ensure_cached(keys: &[String]) {
+    let to_fetch: Vec<String> = {
+        let cache = BRIGHTNESS_CACHE.lock().await;
+        keys.iter().filter(|k| !cache.contains_key(*k)).cloned().collect()
+    };
+    if to_fetch.is_empty() {
+        return;
     }
 
-    let values = tokio::task::spawn_blocking(move || {
-        keys.iter()
-            .filter_map(|key| monitors::get_brightness(key).ok())
+    let fetched = tokio::task::spawn_blocking(move || {
+        to_fetch
+            .into_iter()
+            .filter_map(|key| monitors::get_brightness(&key).ok().map(|v| (key, v)))
             .collect::<Vec<_>>()
     })
     .await
     .unwrap_or_default();
+
+    let mut cache = BRIGHTNESS_CACHE.lock().await;
+    for (key, value) in fetched {
+        cache.entry(key).or_insert(value);
+    }
+}
+
+/// Average cached brightness across the given monitors (missing/unreachable
+/// ones — never successfully read — are skipped).
+async fn cached_avg_brightness(keys: &[String]) -> Option<u16> {
+    if keys.is_empty() {
+        return None;
+    }
+
+    ensure_cached(keys).await;
+
+    let cache = BRIGHTNESS_CACHE.lock().await;
+    let values: Vec<u16> = keys.iter().filter_map(|key| cache.get(key).copied()).collect();
+    drop(cache);
 
     if values.is_empty() {
         None
@@ -236,29 +293,26 @@ async fn selected_monitors_avg_brightness(keys: Vec<String>) -> Option<u16> {
     }
 }
 
-/// Nudge every given monitor's brightness by `delta` percentage points
-/// (each from its own current value, clamped to 0-100).
-async fn adjust_selected_brightness(keys: Vec<String>, delta: i32) {
-    tokio::task::spawn_blocking(move || {
-        for key in &keys {
-            let Ok(current) = monitors::get_brightness(key) else {
-                println!("Warning: failed to read brightness for {key}");
-                continue;
-            };
-            let next = (current as i32 + delta).clamp(0, 100) as u16;
-            if let Err(e) = monitors::set_brightness(key, next) {
-                println!("Warning: failed to set brightness for {key}: {e}");
-            }
-        }
-    })
-    .await
-    .ok();
+/// Nudge every given monitor's cached brightness by `delta` percentage
+/// points (each from its own current value, clamped to 0-100). Pure
+/// in-memory bookkeeping — does not touch the hardware.
+async fn bump_cached_brightness(keys: Vec<String>, delta: i32) {
+    ensure_cached(&keys).await;
+
+    let mut cache = BRIGHTNESS_CACHE.lock().await;
+    for key in &keys {
+        let current = cache.get(key).copied().unwrap_or(50);
+        let next = (current as i32 + delta).clamp(0, 100) as u16;
+        cache.insert(key.clone(), next);
+    }
 }
 
-/// Set every given monitor to the same absolute brightness.
+/// Set every given monitor to the same absolute brightness, immediately
+/// (blocking I2C write), and record the result in the cache.
 async fn set_selected_brightness(keys: Vec<String>, percent: u16) {
+    let write_keys = keys.clone();
     tokio::task::spawn_blocking(move || {
-        for key in &keys {
+        for key in &write_keys {
             if let Err(e) = monitors::set_brightness(key, percent) {
                 println!("Warning: failed to set brightness for {key}: {e}");
             }
@@ -266,6 +320,47 @@ async fn set_selected_brightness(keys: Vec<String>, percent: u16) {
     })
     .await
     .ok();
+
+    let mut cache = BRIGHTNESS_CACHE.lock().await;
+    for key in keys {
+        cache.insert(key, percent);
+    }
+}
+
+/// Debounce a dial's pending rotation: wait for [`ROTATE_DEBOUNCE`] of
+/// silence, then — only if nothing rotated it again in the meantime — write
+/// every selected monitor's cached (already-adjusted) brightness for real.
+async fn schedule_brightness_commit(instance_id: String, keys: Vec<String>) {
+    let generation = {
+        let mut generations = ROTATE_GENERATION.lock().await;
+        let next = generations.get(&instance_id).copied().unwrap_or(0) + 1;
+        generations.insert(instance_id.clone(), next);
+        next
+    };
+
+    tokio::spawn(async move {
+        tokio::time::sleep(ROTATE_DEBOUNCE).await;
+
+        let still_current = ROTATE_GENERATION.lock().await.get(&instance_id).copied() == Some(generation);
+        if !still_current {
+            return; // Superseded by a later tick; that task will commit instead.
+        }
+
+        let targets: Vec<(String, u16)> = {
+            let cache = BRIGHTNESS_CACHE.lock().await;
+            keys.iter().filter_map(|key| cache.get(key).map(|v| (key.clone(), *v))).collect()
+        };
+
+        tokio::task::spawn_blocking(move || {
+            for (key, percent) in &targets {
+                if let Err(e) = monitors::set_brightness(key, *percent) {
+                    println!("Warning: failed to set brightness for {key}: {e}");
+                }
+            }
+        })
+        .await
+        .ok();
+    });
 }
 
 pub async fn init() -> OpenActionResult<()> {

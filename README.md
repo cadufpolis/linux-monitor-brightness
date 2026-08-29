@@ -27,8 +27,8 @@ This is a **v1 skeleton**, built dial-only on purpose — see [Status & next ste
 
 Drag the `Monitor Brightness Dial` action onto a dial. Open its settings panel (property inspector) and check the monitor(s) it should control — the list is populated live from a DDC/CI scan; use **Rescan monitors** if you plug one in after opening the panel.
 
-- **Rotate** the dial to adjust brightness (all selected monitors move together, each from its own current value).
-- **Press** the dial, or **tap** the touchscreen segment, to toggle a quick dim (drops to ~5%, remembers where to restore to).
+- **Rotate** the dial to adjust brightness (all selected monitors move together, each from its own current value). The bar/percentage on screen updates on every tick, but the actual DDC/CI write is debounced to ~1 second after you stop turning it — most monitors' DDC firmware is slow and can lock up if commands are fired faster than that, one write per tick was the cause of early lockups during testing.
+- **Press** the dial, or **tap** the touchscreen segment, to toggle a quick dim (drops to ~5%, remembers where to restore to). This one applies immediately, no debounce.
 - **Press-and-hold** the touchscreen (long touch) to rescan monitors and refresh the display.
 
 ## Project layout
