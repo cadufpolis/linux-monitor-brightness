@@ -81,6 +81,19 @@ static MONITOR_LABEL_CACHE: LazyLock<Mutex<HashMap<String, String>>> =
 static ROTATE_GENERATION: LazyLock<Mutex<HashMap<String, u64>>> =
     LazyLock::new(|| Mutex::const_new(HashMap::new()));
 
+/// Diagnostic: prints what this instance's settings actually deserialized
+/// to, so a "changes don't stick" report can be told apart from "the PI
+/// never actually sent them" (nothing logged / stale values here) vs. "they
+/// arrived but something resets them afterwards" (logged once correctly,
+/// then reverts on the next appear). Check the plugin's own log file under
+/// OpenDeck's `logs/plugins/` directory.
+fn log_settings(event: &str, instance: &Instance, settings: &DialSettings) {
+    println!(
+        "[{event}] instance={} custom_name={:?} debounce_ms={} selected_monitor_keys={:?}",
+        instance.instance_id, settings.custom_name, settings.debounce_ms, settings.selected_monitor_keys
+    );
+}
+
 pub struct MonitorBrightnessAction;
 
 #[async_trait]
@@ -89,6 +102,7 @@ impl Action for MonitorBrightnessAction {
     type Settings = DialSettings;
 
     async fn will_appear(&self, instance: &Instance, settings: &Self::Settings) -> OpenActionResult<()> {
+        log_settings("will_appear", instance, settings);
         push_feedback(instance, settings).await;
         Ok(())
     }
@@ -100,6 +114,7 @@ impl Action for MonitorBrightnessAction {
     }
 
     async fn did_receive_settings(&self, instance: &Instance, settings: &Self::Settings) -> OpenActionResult<()> {
+        log_settings("did_receive_settings", instance, settings);
         // The monitor selection changed in the property inspector; reflect it.
         push_feedback(instance, settings).await;
         Ok(())

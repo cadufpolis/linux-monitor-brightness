@@ -111,12 +111,31 @@
                     .getElementById("rescan_btn")
                     .addEventListener("click", requestMonitors);
 
-                // "change" (fires on blur / Enter), not "input" (fires per
-                // keystroke) — sending setSettings on every keystroke made
-                // the didReceiveSettings-clobbers-a-focused-field race above
-                // far more likely to actually hit while typing.
-                customNameInput.addEventListener("change", update);
-                debounceInput.addEventListener("change", update);
+                // Save ~400ms after the user stops typing — not on "change"
+                // (blur/Enter) alone, since switching to a different dial or
+                // closing this panel right after typing may never actually
+                // blur the field, silently dropping the edit. The timer
+                // fires regardless of focus, and "change"/pagehide/going
+                // invisible flush it immediately for the common case of
+                // deliberately clicking away.
+                let saveTimer = null;
+                const scheduleSave = () => {
+                    clearTimeout(saveTimer);
+                    saveTimer = setTimeout(update, 400);
+                };
+                const saveNow = () => {
+                    clearTimeout(saveTimer);
+                    update();
+                };
+
+                customNameInput.addEventListener("input", scheduleSave);
+                debounceInput.addEventListener("input", scheduleSave);
+                customNameInput.addEventListener("change", saveNow);
+                debounceInput.addEventListener("change", saveNow);
+                window.addEventListener("pagehide", saveNow);
+                document.addEventListener("visibilitychange", () => {
+                    if (document.visibilityState === "hidden") saveNow();
+                });
 
                 // setSettings replaces the whole settings object, so every
                 // field has to be sent together regardless of which one
@@ -232,7 +251,7 @@
             <div class="hint">
                 Shown on the dial's screen. Leave blank to use the selected
                 monitor's name (or "N displays" when more than one is
-                picked). Saves when you click away or press Enter.
+                picked). Saves automatically shortly after you stop typing.
             </div>
             <input id="custom_name" type="text" placeholder="Auto" />
         </div>
