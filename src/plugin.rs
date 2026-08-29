@@ -13,22 +13,39 @@ const BRIGHTNESS_STEP_PERCENT: i32 = 5;
 /// Brightness the dial drops to when "dimmed" (press / short touch toggle).
 const DIM_TARGET_PERCENT: u16 = 5;
 
-/// How long the dial has to sit still before a rotation is actually sent to
-/// the monitor over DDC/CI. Each tick used to trigger its own blocking I2C
+/// Default for [`DialSettings::debounce_ms`] when not set from the property
+/// inspector. Each rotate tick used to trigger its own blocking I2C
 /// read+write; spinning the dial fired those faster than a monitor's DDC
 /// firmware could keep up, which is what was causing the lockups — so ticks
 /// now only update an in-memory value + the on-screen bar, and the real
 /// hardware write is debounced to once per "the user stopped turning it".
-const ROTATE_DEBOUNCE: Duration = Duration::from_millis(1000);
+const DEFAULT_DEBOUNCE_MS: u32 = 1000;
 
-/// Per-instance settings, configured from the property inspector: which
-/// monitor(s) (by [`monitors::MonitorInfo::key`]-style stable id) this dial
-/// controls. A dial can drive more than one monitor at once — rotating
-/// nudges every selected monitor by the same delta.
-#[derive(Serialize, Deserialize, Clone, Default)]
+/// Per-instance settings, configured from the property inspector.
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct DialSettings {
+    /// Which monitor(s) (by [`monitors::MonitorInfo::key`]-style stable id)
+    /// this dial controls. A dial can drive more than one monitor at once —
+    /// rotating nudges every selected monitor by the same delta.
     pub selected_monitor_keys: Vec<String>,
+    /// Overrides the auto-generated title. Empty means "auto": the selected
+    /// monitor's name for a single selection, or "N displays" for more.
+    pub custom_name: String,
+    /// How long, in milliseconds, the dial has to sit still after the last
+    /// rotate tick before the brightness change is actually sent over
+    /// DDC/CI. See [`DEFAULT_DEBOUNCE_MS`].
+    pub debounce_ms: u32,
+}
+
+impl Default for DialSettings {
+    fn default() -> Self {
+        DialSettings {
+            selected_monitor_keys: Vec::new(),
+            custom_name: String::new(),
+            debounce_ms: DEFAULT_DEBOUNCE_MS,
+        }
+    }
 }
 
 struct DimState {
@@ -48,6 +65,14 @@ static DIM_STATE: LazyLock<Mutex<HashMap<String, DimState>>> =
 /// This is what lets rotation update the bar on every tick without hitting
 /// the hardware on every tick.
 static BRIGHTNESS_CACHE: LazyLock<Mutex<HashMap<String, u16>>> =
+    LazyLock::new(|| Mutex::const_new(HashMap::new()));
+
+/// Human-readable label per monitor key (e.g. "Dell U2720Q (#ABC123)"),
+/// used for the auto-generated single-monitor title. Populated whenever the
+/// property inspector asks for the monitor list, and lazily on first need
+/// otherwise (see [`ensure_labels_cached`]) — labels never change on their
+/// own, so there's no need to ever refresh an entry once seen.
+static MONITOR_LABEL_CACHE: LazyLock<Mutex<HashMap<String, String>>> =
     LazyLock::new(|| Mutex::const_new(HashMap::new()));
 
 /// Bumped on every rotation of a given dial; a debounce task only commits
@@ -92,6 +117,9 @@ impl Action for MonitorBrightnessAction {
             let monitors = tokio::task::spawn_blocking(monitors::list_monitors)
                 .await
                 .unwrap_or_default();
+
+            cache_labels(&monitors).await;
+
             let _ = instance
                 .send_to_property_inspector(json!({ "event": "monitors", "monitors": monitors }))
                 .await;
@@ -120,8 +148,13 @@ impl Action for MonitorBrightnessAction {
         // Reflect the change immediately — this is all in-memory, no hardware I/O.
         push_feedback(instance, settings).await;
 
-        // Actually writing to the monitor(s) is debounced; see ROTATE_DEBOUNCE.
-        schedule_brightness_commit(instance.instance_id.clone(), settings.selected_monitor_keys.clone()).await;
+        // Actually writing to the monitor(s) is debounced; see `debounce_ms`.
+        schedule_brightness_commit(
+            instance.instance_id.clone(),
+            settings.selected_monitor_keys.clone(),
+            settings.debounce_ms,
+        )
+        .await;
 
         Ok(())
     }
@@ -232,17 +265,55 @@ async fn push_feedback(instance: &Instance, settings: &DialSettings) {
 
     let feedback = json!({
         "icon": icon,
-        "title": monitor_count_label(settings.selected_monitor_keys.len()),
+        "title": dial_title(settings).await,
         "value": format!("{avg}%"),
         "indicator": { "value": avg },
     });
     let _ = instance.set_feedback(&feedback).await;
 }
 
-fn monitor_count_label(count: usize) -> String {
-    match count {
-        1 => "1 monitor".to_string(),
-        n => format!("{n} monitors"),
+/// The dial's display name: the user's custom name if set, else the
+/// selected monitor's own label for a single selection, else "N displays".
+async fn dial_title(settings: &DialSettings) -> String {
+    let custom = settings.custom_name.trim();
+    if !custom.is_empty() {
+        return custom.to_string();
+    }
+
+    match settings.selected_monitor_keys.as_slice() {
+        [key] => {
+            ensure_labels_cached(std::slice::from_ref(key)).await;
+            MONITOR_LABEL_CACHE
+                .lock()
+                .await
+                .get(key)
+                .cloned()
+                .unwrap_or_else(|| "1 monitor".to_string())
+        }
+        keys => format!("{} displays", keys.len()),
+    }
+}
+
+/// Make sure every given monitor has an entry in [`MONITOR_LABEL_CACHE`],
+/// doing a single fresh scan (covers every connected monitor, not just the
+/// ones asked for) if any of them is missing.
+async fn ensure_labels_cached(keys: &[String]) {
+    let missing = {
+        let cache = MONITOR_LABEL_CACHE.lock().await;
+        keys.iter().any(|key| !cache.contains_key(key))
+    };
+    if !missing {
+        return;
+    }
+
+    let monitors = tokio::task::spawn_blocking(monitors::list_monitors).await.unwrap_or_default();
+    cache_labels(&monitors).await;
+}
+
+async fn cache_labels(found: &[monitors::MonitorInfo]) {
+    let mut cache = MONITOR_LABEL_CACHE.lock().await;
+    for monitor in found {
+        cache.insert(monitor.key.clone(), monitor.label.clone());
     }
 }
 
@@ -327,10 +398,10 @@ async fn set_selected_brightness(keys: Vec<String>, percent: u16) {
     }
 }
 
-/// Debounce a dial's pending rotation: wait for [`ROTATE_DEBOUNCE`] of
-/// silence, then — only if nothing rotated it again in the meantime — write
-/// every selected monitor's cached (already-adjusted) brightness for real.
-async fn schedule_brightness_commit(instance_id: String, keys: Vec<String>) {
+/// Debounce a dial's pending rotation: wait for `debounce_ms` of silence,
+/// then — only if nothing rotated it again in the meantime — write every
+/// selected monitor's cached (already-adjusted) brightness for real.
+async fn schedule_brightness_commit(instance_id: String, keys: Vec<String>, debounce_ms: u32) {
     let generation = {
         let mut generations = ROTATE_GENERATION.lock().await;
         let next = generations.get(&instance_id).copied().unwrap_or(0) + 1;
@@ -339,7 +410,7 @@ async fn schedule_brightness_commit(instance_id: String, keys: Vec<String>) {
     };
 
     tokio::spawn(async move {
-        tokio::time::sleep(ROTATE_DEBOUNCE).await;
+        tokio::time::sleep(Duration::from_millis(debounce_ms as u64)).await;
 
         let still_current = ROTATE_GENERATION.lock().await.get(&instance_id).copied() == Some(generation);
         if !still_current {

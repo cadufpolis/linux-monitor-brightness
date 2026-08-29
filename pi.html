@@ -18,6 +18,13 @@
                     inActionInfo.payload.settings.selected_monitor_keys ?? [];
                 let monitors = [];
 
+                const customNameInput = document.getElementById("custom_name");
+                customNameInput.value = inActionInfo.payload.settings.custom_name ?? "";
+
+                const debounceInput = document.getElementById("debounce_ms");
+                debounceInput.value =
+                    inActionInfo.payload.settings.debounce_ms ?? 1000;
+
                 websocket.onopen = () => {
                     websocket.send(
                         JSON.stringify({
@@ -78,6 +85,8 @@
                     console.log("PI received event:", data.event, data);
                     if (data.event == "didReceiveSettings") {
                         selectedKeys = data.payload.settings.selected_monitor_keys ?? [];
+                        customNameInput.value = data.payload.settings.custom_name ?? "";
+                        debounceInput.value = data.payload.settings.debounce_ms ?? 1000;
                         renderMonitors();
                     } else if (
                         data.event == "sendToPropertyInspector" &&
@@ -92,13 +101,24 @@
                     .getElementById("rescan_btn")
                     .addEventListener("click", requestMonitors);
 
+                customNameInput.addEventListener("input", update);
+                debounceInput.addEventListener("input", update);
+
+                // setSettings replaces the whole settings object, so every
+                // field has to be sent together regardless of which one
+                // actually changed.
                 update = () => {
+                    const debounceMs = parseInt(debounceInput.value, 10);
                     websocket.send(
                         JSON.stringify({
                             event: "setSettings",
                             context: inActionInfo.context,
                             payload: {
                                 selected_monitor_keys: selectedKeys,
+                                custom_name: customNameInput.value,
+                                debounce_ms: Number.isFinite(debounceMs)
+                                    ? Math.max(0, debounceMs)
+                                    : 1000,
                             },
                         }),
                     );
@@ -175,9 +195,34 @@
             #rescan_btn:hover {
                 background-color: oklch(38% 0 0);
             }
+
+            input[type="text"],
+            input[type="number"] {
+                background-color: oklch(25% 0 0);
+                color: oklch(92.2% 0 0);
+                border: 1px solid oklch(40% 0 0);
+                border-radius: 4px;
+                padding: 8px 10px;
+                width: 100%;
+                box-sizing: border-box;
+            }
+
+            input[type="number"] {
+                width: 120px;
+            }
         </style>
     </head>
     <body>
+        <div class="section">
+            <div class="section-title">Dial name</div>
+            <div class="hint">
+                Shown on the dial's screen. Leave blank to use the selected
+                monitor's name (or "N displays" when more than one is
+                picked).
+            </div>
+            <input id="custom_name" type="text" placeholder="Auto" />
+        </div>
+
         <div class="section">
             <div class="section-title">Monitors controlled by this dial</div>
             <div class="hint">
@@ -187,6 +232,16 @@
             </div>
             <div id="monitors_list"></div>
             <button id="rescan_btn" type="button">Rescan monitors</button>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Rotate delay</div>
+            <div class="hint">
+                How long to wait, after you stop turning the dial, before the
+                brightness change is actually sent to the monitor (ms).
+                Higher is gentler on slower monitors.
+            </div>
+            <input id="debounce_ms" type="number" min="0" max="5000" step="100" />
         </div>
     </body>
 </html>

@@ -27,9 +27,15 @@ This is a **v1 skeleton**, built dial-only on purpose — see [Status & next ste
 
 Drag the `Monitor Brightness Dial` action onto a dial. Open its settings panel (property inspector) and check the monitor(s) it should control — the list is populated live from a DDC/CI scan; use **Rescan monitors** if you plug one in after opening the panel.
 
-- **Rotate** the dial to adjust brightness (all selected monitors move together, each from its own current value). The bar/percentage on screen updates on every tick, but the actual DDC/CI write is debounced to ~1 second after you stop turning it — most monitors' DDC firmware is slow and can lock up if commands are fired faster than that, one write per tick was the cause of early lockups during testing.
+- **Rotate** the dial to adjust brightness (all selected monitors move together, each from its own current value). The bar/percentage on screen updates on every tick, but the actual DDC/CI write is debounced — see **Rotate delay** below — since most monitors' DDC firmware is slow and can lock up if commands are fired faster than that (one write per tick was the cause of early lockups during testing).
 - **Press** the dial, or **tap** the touchscreen segment, to toggle a quick dim (drops to ~5%, remembers where to restore to). This one applies immediately, no debounce.
 - **Press-and-hold** the touchscreen (long touch) to rescan monitors and refresh the display.
+
+Settings panel fields:
+
+- **Dial name** — overrides the title shown on screen. Left blank, it defaults to the selected monitor's own name (single selection) or "N displays" (more than one).
+- **Monitors controlled by this dial** — the checkbox list.
+- **Rotate delay** — how long, in ms, the dial has to sit still after the last tick before the brightness change is actually sent (default `1000`). Raise it if a monitor still struggles to keep up; lower it for snappier response on a monitor that handles DDC/CI fine.
 
 ## Project layout
 
@@ -49,6 +55,6 @@ Notably **absent** compared to the volume controller: there's no dynamic "column
 Deliberately out of scope for v1, in rough order of usefulness:
 
 - **Keypad support.** Only `Controllers: ["Encoder"]` is declared in the manifest; add `"Keypad"` plus `ControllerKind`-style handling (see the volume controller's `src/utils.rs`) if you want a 3-row grid variant too.
-- **Real icons.** `src/gfx.rs` draws a plain circle at runtime as a placeholder; swap in real PNG/SVG assets under `img/` once you have some.
+- **Real icons.** `src/gfx.rs` draws a sun-with-rays glyph at runtime as a placeholder (`cargo run --example render_icons -- /tmp/icons` dumps every variant to PNG for a quick look); swap in real PNG/SVG assets under `img/` once you have some.
 - **Reflect external changes.** Brightness shown on the dial is only ever what the plugin itself last set — an OSD button on the monitor or another app changing it won't be picked up until the next interaction (`will_appear`/rotate/tap). A periodic re-poll (careful: DDC/CI over I2C is slow, don't poll too often) would fix that.
 - **Per-monitor grouping polish.** Multiple monitors on one dial currently show/average brightness and nudge each independently by the same delta — fine for monitors kept roughly in sync, but there's no per-monitor curve/gamma matching.
