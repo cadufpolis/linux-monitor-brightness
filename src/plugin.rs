@@ -265,7 +265,10 @@ async fn push_feedback(instance: &Instance, settings: &DialSettings) {
 
     let feedback = json!({
         "icon": icon,
-        "title": dial_title(settings).await,
+        // Sent as an object (not a bare string) so `enabled: true` always
+        // rides along — the idle branch above disables this same item, and
+        // a bare string value only updates the text, never re-enabling it.
+        "title": { "value": dial_title(settings).await, "enabled": true },
         "value": format!("{avg}%"),
         "indicator": { "value": avg },
     });
