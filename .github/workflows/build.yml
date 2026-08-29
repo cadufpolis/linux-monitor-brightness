@@ -1,0 +1,178 @@
+name: Build and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v0.1.0)'
+        required: true
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build for ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            artifact-ext: -x86_64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+            artifact-ext: -aarch64-unknown-linux-gnu
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Set up Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      - name: Build binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Rename binary and output artifact name
+        id: rename_unix
+        shell: bash
+        run: |
+          PACKAGE_NAME=$(cargo metadata --no-deps --format-version 1 | jq -r ".packages[0].name")
+          ARTIFACT_NAME="${PACKAGE_NAME}${{ matrix.artifact-ext }}"
+          mv "target/${{ matrix.target }}/release/${PACKAGE_NAME}" "$ARTIFACT_NAME"
+          echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.rename_unix.outputs.artifact_name }}
+          path: ${{ steps.rename_unix.outputs.artifact_name }}
+          compression-level: 0
+
+  package:
+    name: Package Plugin
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: binaries
+
+      - name: Get plugin directory name
+        id: plugin_name
+        run: |
+          PLUGIN_NAME="com.cadufpolis.monitor-brightness.sdPlugin"
+          echo "name=$PLUGIN_NAME" >> $GITHUB_OUTPUT
+
+      - name: Create plugin package
+        id: package
+        run: |
+          PLUGIN_DIR="${{ steps.plugin_name.outputs.name }}"
+          ZIP_NAME="com.cadufpolis.monitor-brightness.zip"
+
+          mkdir -p "$PLUGIN_DIR"
+
+          cp binaries/oa-monitor-brightness-x86_64-unknown-linux-gnu/oa-monitor-brightness-x86_64-unknown-linux-gnu "$PLUGIN_DIR/"
+          cp binaries/oa-monitor-brightness-aarch64-unknown-linux-gnu/oa-monitor-brightness-aarch64-unknown-linux-gnu "$PLUGIN_DIR/"
+          chmod +x "$PLUGIN_DIR"/oa-monitor-brightness-*
+
+          cp manifest.json "$PLUGIN_DIR/"
+          cp LICENSE "$PLUGIN_DIR/"
+          cp README.md "$PLUGIN_DIR/"
+          cp pi.html "$PLUGIN_DIR/"
+          cp Cargo.toml "$PLUGIN_DIR/"
+          cp Cargo.lock "$PLUGIN_DIR/"
+          cp -r img "$PLUGIN_DIR/"
+
+          zip -Ar "$ZIP_NAME" "$PLUGIN_DIR"
+
+          echo "Created $ZIP_NAME"
+          ls -lh "$ZIP_NAME"
+          echo "zip_name=$ZIP_NAME" >> $GITHUB_OUTPUT
+
+      - name: Upload plugin package
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-package
+          path: ${{ steps.package.outputs.zip_name }}
+          compression-level: 0
+
+  release:
+    name: Create GitHub Release
+    needs: package
+    runs-on: ubuntu-22.04
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get plugin directory name and zip name
+        id: plugin_name
+        run: |
+          PLUGIN_NAME="com.cadufpolis.monitor-brightness.sdPlugin"
+          ZIP_NAME="com.cadufpolis.monitor-brightness.zip"
+          echo "name=$PLUGIN_NAME" >> $GITHUB_OUTPUT
+          echo "zip_name=$ZIP_NAME" >> $GITHUB_OUTPUT
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Download plugin package
+        uses: actions/download-artifact@v4
+        with:
+          name: plugin-package
+          path: .
+
+      - name: Generate release notes
+        run: |
+          cat > release_notes.md << 'EOF'
+          ## Monitor Brightness Plugin Release
+
+          ### Installation
+          1. Download the `${{ steps.plugin_name.outputs.zip_name }}` file
+          2. Extract it to your OpenDeck plugins directory
+          3. Restart OpenDeck
+
+          ### Requirements
+          - Monitors with DDC/CI support, reachable over `/dev/i2c-*` (see README)
+
+          ### Changes
+          See commit history for detailed changes.
+          EOF
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Release ${{ steps.version.outputs.version }}
+          body_path: release_notes.md
+          files: ${{ steps.plugin_name.outputs.zip_name }}
+          draft: true
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

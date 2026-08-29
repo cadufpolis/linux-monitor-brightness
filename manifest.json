@@ -1,0 +1,38 @@
+{
+  "Name": "Monitor Brightness",
+  "Author": "cadufpolis",
+  "Version": "0.1.0",
+  "CodePaths": {
+    "x86_64-unknown-linux-gnu": "oa-monitor-brightness-x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu": "oa-monitor-brightness-aarch64-unknown-linux-gnu"
+  },
+  "CodePathLin": "oa-monitor-brightness-x86_64-unknown-linux-gnu",
+  "OS": [
+    {
+      "Platform": "linux"
+    }
+  ],
+  "Category": "Monitor Brightness",
+  "Description": "Control the brightness of your monitors over DDC/CI from a Stream Deck+ dial.",
+  "Icon": "img/icon",
+  "PropertyInspectorPath": "pi.html",
+  "Actions": [
+    {
+      "Icon": "img/grid-slider",
+      "Name": "Monitor Brightness Dial",
+      "UUID": "com.cadufpolis.monitor-brightness.dial",
+      "Tooltip": "Drop on a Stream Deck+ dial. Pick which monitor(s) it controls in the settings panel.",
+      "Controllers": ["Encoder"],
+      "Encoder": {
+        "layout": "$B1",
+        "TriggerDescription": {
+          "Rotate": "Adjust brightness",
+          "Push": "Toggle dim",
+          "Touch": "Toggle dim",
+          "LongTouch": "Rescan monitors"
+        }
+      },
+      "States": [{}]
+    }
+  ]
+}

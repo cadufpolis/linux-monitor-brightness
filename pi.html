@@ -1,0 +1,192 @@
+<!doctype html>
+<html>
+    <head>
+        <script>
+            let update = () => {};
+
+            function connectOpenActionSocket(
+                inPort,
+                inPropertyInspectorUUID,
+                inRegisterEvent,
+                inInfo,
+                inActionInfo,
+            ) {
+                const websocket = new WebSocket("ws://localhost:" + inPort);
+                inActionInfo = JSON.parse(inActionInfo);
+
+                let selectedKeys =
+                    inActionInfo.payload.settings.selected_monitor_keys ?? [];
+                let monitors = [];
+
+                websocket.onopen = () => {
+                    websocket.send(
+                        JSON.stringify({
+                            event: inRegisterEvent,
+                            uuid: inPropertyInspectorUUID,
+                        }),
+                    );
+                    requestMonitors();
+                };
+
+                const requestMonitors = () => {
+                    websocket.send(
+                        JSON.stringify({
+                            event: "sendToPlugin",
+                            action: inActionInfo.action,
+                            context: inActionInfo.context,
+                            payload: { event: "getMonitors" },
+                        }),
+                    );
+                };
+
+                const renderMonitors = () => {
+                    const container = document.getElementById("monitors_list");
+                    container.innerHTML = "";
+
+                    if (monitors.length === 0) {
+                        container.innerHTML =
+                            '<div class="empty">No DDC/CI monitors detected. Make sure the user can access /dev/i2c-* (see README), then hit Rescan.</div>';
+                        return;
+                    }
+
+                    monitors.forEach((mon) => {
+                        const item = document.createElement("label");
+                        item.className = "monitor-item";
+                        const checked = selectedKeys.includes(mon.key) ? "checked" : "";
+                        item.innerHTML = `
+                            <input type="checkbox" data-key="${mon.key}" ${checked} />
+                            <span>${mon.label}</span>
+                        `;
+                        container.appendChild(item);
+                    });
+
+                    container.querySelectorAll("input[type=checkbox]").forEach((cb) => {
+                        cb.addEventListener("change", (e) => {
+                            const key = e.target.getAttribute("data-key");
+                            if (e.target.checked) {
+                                if (!selectedKeys.includes(key)) selectedKeys.push(key);
+                            } else {
+                                selectedKeys = selectedKeys.filter((k) => k !== key);
+                            }
+                            update();
+                        });
+                    });
+                };
+
+                websocket.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    console.log("PI received event:", data.event, data);
+                    if (data.event == "didReceiveSettings") {
+                        selectedKeys = data.payload.settings.selected_monitor_keys ?? [];
+                        renderMonitors();
+                    } else if (
+                        data.event == "sendToPropertyInspector" &&
+                        data.payload?.event == "monitors"
+                    ) {
+                        monitors = data.payload.monitors ?? [];
+                        renderMonitors();
+                    }
+                };
+
+                document
+                    .getElementById("rescan_btn")
+                    .addEventListener("click", requestMonitors);
+
+                update = () => {
+                    websocket.send(
+                        JSON.stringify({
+                            event: "setSettings",
+                            context: inActionInfo.context,
+                            payload: {
+                                selected_monitor_keys: selectedKeys,
+                            },
+                        }),
+                    );
+                };
+
+                renderMonitors();
+            }
+
+            const connectElgatoStreamDeckSocket = connectOpenActionSocket;
+        </script>
+        <style>
+            * {
+                font-family: system-ui, sans-serif;
+                font-size: 16px;
+                color: oklch(92.2% 0 0);
+            }
+
+            body {
+                margin: 16px;
+                background-color: oklch(20.5% 0 0);
+            }
+
+            .section {
+                margin-bottom: 20px;
+            }
+
+            .section-title {
+                font-weight: bold;
+                margin-bottom: 8px;
+            }
+
+            .hint {
+                color: oklch(70% 0 0);
+                font-size: 14px;
+                margin-bottom: 8px;
+            }
+
+            #monitors_list {
+                margin-top: 8px;
+            }
+
+            .monitor-item {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                padding: 8px 12px;
+                margin-bottom: 4px;
+                background-color: oklch(25% 0 0);
+                border-radius: 4px;
+                cursor: pointer;
+            }
+
+            .monitor-item input[type="checkbox"] {
+                width: 20px;
+                height: 20px;
+                cursor: pointer;
+                flex-shrink: 0;
+            }
+
+            .empty {
+                color: oklch(60% 0 0);
+                font-style: italic;
+            }
+
+            #rescan_btn {
+                background-color: oklch(30% 0 0);
+                color: oklch(92.2% 0 0);
+                border: 1px solid oklch(45% 0 0);
+                border-radius: 4px;
+                padding: 8px 14px;
+                cursor: pointer;
+            }
+
+            #rescan_btn:hover {
+                background-color: oklch(38% 0 0);
+            }
+        </style>
+    </head>
+    <body>
+        <div class="section">
+            <div class="section-title">Monitors controlled by this dial</div>
+            <div class="hint">
+                Pick one or more monitors. Rotating the dial adjusts all of
+                them together; pressing it (or tapping the screen) toggles a
+                quick dim.
+            </div>
+            <div id="monitors_list"></div>
+            <button id="rescan_btn" type="button">Rescan monitors</button>
+        </div>
+    </body>
+</html>

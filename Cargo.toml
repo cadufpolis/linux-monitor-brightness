@@ -1,0 +1,16 @@
+[package]
+name = "oa-monitor-brightness"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+openaction = "2.7.0"
+tokio = { version = "1.45", features = ["full"] }
+log = "0.4"
+simplelog = "0.12"
+serde = "1.0"
+serde_json = "1.0"
+anyhow = "1.0"
+image = "0.24"
+base64 = "0.22"
+ddc-hi = { version = "0.4.1", default-features = false, features = ["ddc-i2c"] }

@@ -1,0 +1,5 @@
+/target
+oa-monitor-brightness-x86_64-unknown-linux-gnu
+oa-monitor-brightness-aarch64-unknown-linux-gnu
+*.sdPlugin/
+*.zip
