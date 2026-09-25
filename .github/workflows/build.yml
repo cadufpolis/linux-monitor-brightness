@@ -151,14 +151,14 @@ jobs:
       - name: Generate release notes
         run: |
           cat > release_notes.md << 'EOF'
-          ## Monitor Brightness Plugin Release
+          ## Linux Monitor Brightness Release
 
           ### Installation
           1. Download the `${{ steps.plugin_name.outputs.zip_name }}` file
-          2. Extract it to your OpenDeck plugins directory
-          3. Restart OpenDeck
+          2. Install it from your OpenAction server's plugins page (e.g. OpenDeck)
 
           ### Requirements
+          - Linux only
           - Monitors with DDC/CI support, reachable over `/dev/i2c-*` (see README)
 
           ### Changes

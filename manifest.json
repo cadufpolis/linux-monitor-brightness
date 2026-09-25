@@ -1,5 +1,5 @@
 {
-  "Name": "Monitor Brightness",
+  "Name": "Linux Monitor Brightness",
   "Author": "cadufpolis",
   "Version": "0.1.0",
   "CodePaths": {
@@ -12,8 +12,8 @@
       "Platform": "linux"
     }
   ],
-  "Category": "Monitor Brightness",
-  "Description": "Control the brightness of your monitors over DDC/CI from a Stream Deck+ dial.",
+  "Category": "Linux Monitor Brightness",
+  "Description": "Control the brightness of your monitors over DDC/CI from a Stream Deck+ dial. Linux only.",
   "Icon": "img/icon",
   "PropertyInspectorPath": "pi.html",
   "Actions": [

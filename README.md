@@ -1,12 +1,18 @@
-# OA Monitor Brightness Plugin
+# Linux Monitor Brightness
 
-A DDC/CI monitor-brightness control plugin for Stream Deck using OpenDeck on Linux, scaffolded from the same structure as [opendeck-volume-controller](../opendeck-volume-controller).
+A DDC/CI monitor-brightness control plugin for [OpenAction](https://openaction.amankhanna.me/) servers such as [OpenDeck](https://github.com/nekename/OpenDeck), scaffolded from the same structure as [opendeck-volume-controller](https://github.com/mdvictor/opendeck-volume-controller). This is an unofficial, community plugin.
+
+> **Linux only.** DDC/CI is accessed through the Linux `i2c-dev` interface (`/dev/i2c-*`), so the plugin does not run on Windows or macOS.
 
 ## Overview
 
 Control the brightness of one or more monitors straight from a Stream Deck+ dial. Pick which monitor(s) a dial drives in its settings panel; rotating adjusts brightness, pressing (or tapping the touchscreen) toggles a quick dim.
 
-This is a **v1 skeleton**, built dial-only on purpose — see [Status & next steps](#status--next-steps).
+Dial-only for now — see [Status & next steps](#status--next-steps).
+
+## Installation
+
+Install it from your OpenAction server's plugin marketplace, or download `com.cadufpolis.monitor-brightness.zip` from the [latest release](https://github.com/cadufpolis/linux-monitor-brightness/releases/latest) and install it from the plugins page.
 
 ## Requirements
 
@@ -42,7 +48,7 @@ Settings panel fields:
 
 ## Project layout
 
-Mirrors `opendeck-volume-controller`'s structure:
+Mirrors [opendeck-volume-controller](https://github.com/mdvictor/opendeck-volume-controller)'s structure:
 
 - `src/main.rs` — entrypoint, logger setup, hands off to `plugin::init()`.
 - `src/plugin.rs` — the `Action` implementation (dial events, settings, property-inspector messaging).
