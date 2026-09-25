@@ -94,7 +94,30 @@ impl Action for MonitorBrightnessAction {
     type Settings = DialSettings;
 
     async fn will_appear(&self, instance: &Instance, settings: &Self::Settings) -> OpenActionResult<()> {
-        push_feedback(instance, settings).await;
+        // Paint once, immediately, from whatever's already cached. See
+        // `push_feedback_quick`'s doc comment for why this can't just call
+        // the full `push_feedback` inline here — and why this handler tries
+        // hard to never send more than this one `setFeedback` call.
+        let (quick_avg, quick_title) = push_feedback_quick(instance, settings).await;
+
+        if !settings.selected_monitor_keys.is_empty() {
+            let instance_id = instance.instance_id.clone();
+            let settings = settings.clone();
+            tokio::spawn(async move {
+                if let Some(instance) = get_instance(instance_id).await {
+                    let avg = cached_avg_brightness(&settings.selected_monitor_keys).await;
+                    let title = dial_title(&settings).await;
+                    // Only repaint if the real, hardware-backed data
+                    // actually differs from the quick paint above — see
+                    // `push_feedback_quick`'s doc comment for why a
+                    // no-op resend here is worth avoiding, not just wasteful.
+                    if avg != quick_avg || title != quick_title {
+                        render_feedback(&instance, &settings, avg, title).await;
+                    }
+                }
+            });
+        }
+
         Ok(())
     }
 
@@ -236,9 +259,40 @@ async fn toggle_dim(instance: &Instance, settings: &DialSettings) {
 }
 
 /// Push the dial's icon/title/value/bar to its touchscreen segment, from
-/// whatever [`BRIGHTNESS_CACHE`] currently believes (reading hardware only
-/// for monitors it hasn't seen yet).
+/// whatever [`BRIGHTNESS_CACHE`]/[`MONITOR_LABEL_CACHE`] currently believe —
+/// reading hardware (a brightness read, or a monitor rescan for the title's
+/// label) for whatever isn't cached yet. See [`push_feedback_quick`] for a
+/// variant that never does that, used where blocking would stall other
+/// instances' events.
 async fn push_feedback(instance: &Instance, settings: &DialSettings) {
+    let avg = cached_avg_brightness(&settings.selected_monitor_keys).await;
+    let title = dial_title(settings).await;
+    render_feedback(instance, settings, avg, title).await;
+}
+
+/// Same as [`push_feedback`], but only ever reads what's already cached —
+/// never touches DDC/CI or rescans the I2C bus for a monitor's label. A
+/// cold start's first scan can take several seconds (see
+/// `monitors::DISPLAY_REGISTRY`'s doc comment), and every inbound event —
+/// including every *other* instance's `dial_rotate` — is handled on one
+/// sequential loop (see the crate's `while let Some(message) = ...` event
+/// loop), so a `will_appear` that blocked on that scan used to stall
+/// rotation feedback for the whole plugin, not just its own dial. So
+/// `will_appear` calls this for an instant first paint, then kicks off a
+/// background task that calls the real [`push_feedback`] once the hardware
+/// answers — but only if the answer actually differs (returned here for
+/// that comparison): each `setFeedback` costs OpenDeck a full async
+/// render-and-write-to-device cycle, queued per dial, so firing a second,
+/// identical one right behind the first just delays whatever the user does
+/// next (e.g. the first rotate tick) behind a pointless extra queue entry.
+async fn push_feedback_quick(instance: &Instance, settings: &DialSettings) -> (Option<u16>, String) {
+    let avg = peek_avg_brightness(&settings.selected_monitor_keys).await;
+    let title = peek_dial_title(settings).await;
+    render_feedback(instance, settings, avg, title.clone()).await;
+    (avg, title)
+}
+
+async fn render_feedback(instance: &Instance, settings: &DialSettings, avg: Option<u16>, title: String) {
     if settings.selected_monitor_keys.is_empty() {
         let feedback = json!({
             "icon": gfx::IDLE_ICON.as_str(),
@@ -252,10 +306,6 @@ async fn push_feedback(instance: &Instance, settings: &DialSettings) {
         let _ = instance.set_feedback(&feedback).await;
         return;
     }
-
-    let avg = cached_avg_brightness(&settings.selected_monitor_keys)
-        .await
-        .unwrap_or(0);
 
     let dimmed = DIM_STATE
         .lock()
@@ -275,9 +325,12 @@ async fn push_feedback(instance: &Instance, settings: &DialSettings) {
         // Sent as an object (not a bare string) so `enabled: true` always
         // rides along — the idle branch above disables this same item, and
         // a bare string value only updates the text, never re-enabling it.
-        "title": { "value": dial_title(settings).await, "enabled": true },
-        "value": format!("{avg}%"),
-        "indicator": { "value": avg },
+        "title": { "value": title, "enabled": true },
+        // Still waiting on the very first hardware read (see
+        // `push_feedback_quick`): show a neutral placeholder rather than a
+        // misleading "0%".
+        "value": avg.map(|v| format!("{v}%")).unwrap_or_else(|| "…".to_string()),
+        "indicator": { "value": avg.unwrap_or(0) },
     });
     let _ = instance.set_feedback(&feedback).await;
 }
@@ -300,6 +353,25 @@ async fn dial_title(settings: &DialSettings) -> String {
                 .cloned()
                 .unwrap_or_else(|| "1 monitor".to_string())
         }
+        keys => format!("{} displays", keys.len()),
+    }
+}
+
+/// Same as [`dial_title`], but only reads [`MONITOR_LABEL_CACHE`] as it
+/// currently stands — never triggers [`ensure_labels_cached`]'s rescan.
+async fn peek_dial_title(settings: &DialSettings) -> String {
+    let custom = settings.custom_name.trim();
+    if !custom.is_empty() {
+        return custom.to_string();
+    }
+
+    match settings.selected_monitor_keys.as_slice() {
+        [key] => MONITOR_LABEL_CACHE
+            .lock()
+            .await
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| "1 monitor".to_string()),
         keys => format!("{} displays", keys.len()),
     }
 }
@@ -351,6 +423,25 @@ async fn ensure_cached(keys: &[String]) {
     let mut cache = BRIGHTNESS_CACHE.lock().await;
     for (key, value) in fetched {
         cache.entry(key).or_insert(value);
+    }
+}
+
+/// Same as [`cached_avg_brightness`], but only reads [`BRIGHTNESS_CACHE`]
+/// as it currently stands — never triggers [`ensure_cached`]'s hardware
+/// fetch for a monitor it hasn't seen yet.
+async fn peek_avg_brightness(keys: &[String]) -> Option<u16> {
+    if keys.is_empty() {
+        return None;
+    }
+
+    let cache = BRIGHTNESS_CACHE.lock().await;
+    let values: Vec<u16> = keys.iter().filter_map(|key| cache.get(key).copied()).collect();
+    drop(cache);
+
+    if values.is_empty() {
+        None
+    } else {
+        Some((values.iter().map(|&v| v as u32).sum::<u32>() / values.len() as u32) as u16)
     }
 }
 
@@ -446,6 +537,14 @@ async fn schedule_brightness_commit(instance_id: String, keys: Vec<String>, debo
 
 pub async fn init() -> OpenActionResult<()> {
     println!("Stream Deck connected - Monitor Brightness plugin ready");
+
+    // Kick off the (possibly several-second) first I2C bus scan right away
+    // in the background, so it's likely already done — or at least already
+    // running, instead of starting from scratch — by the time any dial's
+    // `will_appear` needs it.
+    tokio::spawn(async {
+        let _ = tokio::task::spawn_blocking(monitors::list_monitors).await;
+    });
 
     register_action(MonitorBrightnessAction).await;
 
